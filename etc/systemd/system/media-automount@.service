@@ -1,0 +1,7 @@
+[Unit]
+Description=@Automounting and executing externaly attached media
+
+[Service]
+Type=oneshot
+GuessMainPID=no
+ExecStart=/usr/bin/media-automount %I
