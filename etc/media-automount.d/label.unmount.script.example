@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# This script is called by media-automount when ext. /dev/sdX device was disconnected.
+# media-automount script calls this script with 1 parameter: <kernel_device>
+# Script name must be <label>.unmount.script (or kernel <devX>.unmount.script if device has no label)
+
+logger -st "<label>.scrip" "script <label>.unmount.scrip started"
+
+# put here actions to execute...
+
+logger -st "<label>.scrip" "script <label>.unmount.scrip ended"
+
+exit 0

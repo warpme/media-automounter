@@ -1,0 +1,8 @@
+# -*- sh -*-
+
+# Options to use for auto-mounting generic filesystems
+AUTOMOUNT_OPTS=
+
+# Type to use for auto-mounting generic filesystems
+AUTOMOUNT_TYPE=auto
+

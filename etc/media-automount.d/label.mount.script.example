@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# This script is called by media-automount when ext. /dev/sdX device is connected.
+# media-automount script calls this script with 2 parameters: <kernel_device> <mount_path>
+# Script name must be <label>.mount.script (or kernel <devX>.mount.script if devide has no label)
+
+logger -st "<label>.scrip" "script <label>.mount.scrip started"
+
+# put here actions to execute...
+
+logger -st "<label>.scrip" "script <label>.mount.scrip ended"
+
+exit 0

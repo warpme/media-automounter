@@ -1,0 +1,182 @@
+#!/bin/sh
+#$1 = <dev>
+
+# Default options to use for mounting
+AUTOMOUNT_OPTS='errors=remount-ro,relatime,utf8,user'
+# Default type to use for mounting
+AUTOMOUNT_TYPE='auto'
+
+# Directory to look for type-specific settings
+confdir=/etc/media-automount.d
+
+# Directory to use as parent media dir for mountpoints
+mediadir=/media
+
+# Directory to hold status of connected disks used to
+# exec. exit stripts at drive dissconnect
+statedir=/var/lib/media-automount
+
+. $confdir/media-automount.conf
+
+[[ $EUID != 0 ]] && {
+    echo "This tool requires root permissions"
+    exit 1
+}
+shopt -s nullglob
+
+log() {
+    logger -st "media-automount" "$*"
+}
+
+if ! [ "$1" ]
+then
+    log "missing arguments! a device name must be provided"
+    exit 1
+else
+    device=`echo ${1} | cut -d":" -f1`
+    action=`echo ${1} | cut -d":" -f2`
+    log "called with dev=\'$device\' action=\'$action\'"
+    dev=/dev/$device
+fi
+
+if [ "x${DEVICES_TO_IGNORE}" != "x" ] ; then
+    if [ ! x`echo $DEVICES_TO_IGNORE | grep -c "$device"` = "x0" ] ; then
+        log "Device with kernel name $device is in ignored list. Exiting ..."
+        exit 0
+    fi
+fi
+
+# Load additional info for the block device
+eval $(blkid -po export $dev)
+
+if [ ! x"$LABEL" = "x" ] ; then
+    if [ ! "x${LABELS_TO_IGNORE}" = "x" ] ; then
+        if [ ! x`echo $LABELS_TO_IGNORE | grep -c "$LABEL"` = "x0" ] ; then
+            log "Device with label $LABEL is in ignored list. Exiting ..."
+            exit 0
+        fi
+    fi
+fi
+
+# Check if device not exists but mounted, umount it or
+# action is 'disconnected' unmount it
+if [ ! -b $dev ] || [ x$action = "xdisconnected" ]
+then
+    if grep /etc/mtab -qe "^$dev"
+    then
+        log "$dev device removed, unmounting and cleaning mount dir ..."
+        if umount "$dev"
+        then
+            log "$dev device successfully unmounted. Looking for $device in $statedir ..."
+            # Execute unmount script (if present in confdir)
+            if [ -e $statedir/$device ]
+            then
+                script_ident=`cat $statedir/$device`
+                if [ -e $confdir/$script_ident.unmount.script ]
+                then
+                    log "executing \'$confdir/$script_ident.unmount.script $dev\'"
+                    rc=`sh $confdir/$script_ident.unmount.script $dev &`
+                    log "\'$confdir/$script_ident.unmount.script $dev\' returned ${rc}"
+                fi
+            fi
+            rm -f $statedir/$device
+            exitcode=0
+        else
+            exitcode=$?
+            log "Error umounting \'$dev\' errcode:$exitcode"
+        fi
+    else
+        # prevent it from failing on nonexistent devices and degrading systemctl boot
+        exitcode=0
+            log "device \'$dev\' doesn't exist anymore or is not a block device ..."
+    fi
+
+    # cleanup
+    for dir in "$mediadir"/*
+    do
+        [ -d "$dir" ] && ! mountpoint -q "$dir" && rmdir "$dir"
+    done
+    exit $exitcode
+fi
+
+# check if device is already mounted. if mounted thet exit
+if grep /etc/mtab -qe "^$dev"
+then
+    log "device with label \'$LABEL\' already mounted. Exiting ..."
+    exit 0
+fi
+
+# Devices with unknown type will be ignored
+if [ -z "$TYPE" ]
+then
+    log "\'$dev\' has no known filesystem type, ignoring mount request ..."
+        exit 0
+fi
+
+# Check /etc/fstab for an entry corresponding to the device
+[ "$UUID" ] && fstab=$(grep /etc/fstab -e "^[^#]*${UUID/\-/\\\-}") || \
+[ "$LABEL" ] && fstab=$(grep /etc/fstab -e "^[^#]*${LABEL/\-/\\\-}") || \
+fstab=$(grep /etc/fstab -e "^[ \t]*$dev[ \t]")
+
+# Don't manage devices that are already in fstab
+if [ "$fstab" ]
+then
+    log "\'$dev\' already in /etc/fstab, automount won't manage it: ${fstab/[ \t][ \t]/ }"
+    exit 1
+fi
+
+if [ "x${MOUNT_MAP}" != "x" ] ; then
+    for triple in ${MOUNT_MAP} ; do
+        map_label=`echo ${triple} | cut -d":" -f1`
+        map_path=`echo ${triple} | cut -d":" -f2`
+        mnt_options=`echo ${triple} | cut -d":" -f3`
+        if [ x$map_label = x$LABEL ] ; then
+            if [ ! -z $map_path ] ; then
+                log "device with label \'$LABEL\' configured to mount at \'$map_path\' with \'$mnt_options\' options ..."
+                AUTOMOUNT_DIR=$map_path
+            else
+                AUTOMOUNT_DIR="${mediadir}/${LABEL:-${dev##*/}}"
+            fi
+            break
+        else
+            AUTOMOUNT_DIR="${mediadir}/${LABEL:-${dev##*/}}"
+        fi
+    done
+else
+    AUTOMOUNT_DIR="${mediadir}/${LABEL:-${dev##*/}}"
+fi
+
+# Load Filesystem-specific configuration for mounting
+if [ ! -z $mnt_options ]
+then
+    AUTOMOUNT_OPTS=$mnt_options
+elif [ -e "%confdir/$TYPE.options" ]
+then
+    source "$confdir/$TYPE.options"
+elif [ -e "$confdir/auto.options" ]
+then
+    source "$confdir/auto.options"
+fi
+
+log "mounting device \'$dev\' in \'$AUTOMOUNT_DIR\' with \'$AUTOMOUNT_OPTS\' options ..."
+mkdir -p "$AUTOMOUNT_DIR"
+if mount -t "$AUTOMOUNT_TYPE" -o "$AUTOMOUNT_OPTS" "$dev" "$AUTOMOUNT_DIR"
+then
+    log "device successfully mounted: \'$AUTOMOUNT_DIR\'. Adding $device state to $statedir ..."
+    script_ident=${LABEL:-${dev##*/}}
+    mkdir -p $statedir
+    touch $statedir/$device
+    echo  $script_ident > $statedir/$device
+    # Execute use script (if present in confdir)
+    if [ -e $confdir/$script_ident.mount.script ]
+    then
+        log "executing \'$confdir/$script_ident.mount.script $dev $AUTOMOUNT_DIR\' ..."
+        rc=`sh $confdir/$script_ident.mount.script $dev $AUTOMOUNT_DIR &`
+        log "\'$confdir/$script_ident.mount.script $dev $AUTOMOUNT_DIR \' returned ${rc}"
+    fi
+    exit 0
+else
+    log "mount error: $?"
+    rmdir "$AUTOMOUNT_DIR"
+    exit 1
+fi
